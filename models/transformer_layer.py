@@ -13,7 +13,7 @@ layer transparently uses whatever is registered in norm.py and ffn.py.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import torch
 import torch.nn as nn
@@ -22,6 +22,10 @@ from .attention import BaseAttention, build_attention
 from .config import ModelConfig
 from .ffn import BaseFeedForward, build_ffn
 from .norm import BaseNorm, build_norm
+
+if TYPE_CHECKING:
+    from kv_cache.block_table import LayeredBlockTable
+    from kv_cache.paged_kv_cache import PagedKVCache
 
 
 class TransformerLayer(nn.Module):
@@ -44,10 +48,12 @@ class TransformerLayer(nn.Module):
 
     def forward(
         self,
-        x         : torch.Tensor,                   # (B, T, dim)
-        mask      : Optional[torch.Tensor] = None,  # (1, 1, max_T, max_T) additive
-        use_cache : bool = False,
-        start_pos : int  = 0,
+        x           : torch.Tensor,
+        mask        : Optional[torch.Tensor] = None,
+        use_cache   : bool = False,
+        start_pos   : int  = 0,
+        block_table : Optional["LayeredBlockTable"] = None,
+        kv_cache    : Optional["PagedKVCache"] = None,
     ) -> torch.Tensor:
         # Attention sub-layer: pre-norm → attention → residual
         h = x + self.attention(
@@ -55,6 +61,8 @@ class TransformerLayer(nn.Module):
             mask=mask,
             use_cache=use_cache,
             start_pos=start_pos,
+            block_table=block_table,
+            kv_cache=kv_cache,
         )
         # FFN sub-layer: pre-norm → FFN → residual
         return h + self.ffn(self.ffn_norm(h))

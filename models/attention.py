@@ -4,12 +4,16 @@ Attention implementations for PagedInfer.
 Class hierarchy:
   BaseAttention          — abstract interface every attention class must satisfy
     VanillaAttention     — standard MHA (n_kv_heads == n_heads)
-    GroupedQueryAttention— GQA / MQA  (n_kv_heads <= n_heads)
+    GroupedQueryAttention— GQA / MQA  (n_kv_heads <= n_heads), flat KV cache
+    PagedAttention       — GQA with external paged KV cache (vLLM-style)
     FlashAttention       — stub; will use fused CUDA kernel
-    PagedAttention       — stub; will use paged KV-cache block allocator
 
 All classes share the same forward() signature so TransformerLayer is
-backend-agnostic.  Swap by changing cfg.attention_type (see model_config.yaml).
+backend-agnostic.  Swap by changing cfg.attention_type (see model_config.yaml):
+    attention_type: "vanilla"  — MHA, no GQA
+    attention_type: "gqa"      — GQA with flat cache (default)
+    attention_type: "paged"    — GQA with paged block cache
+    attention_type: "flash"    — stub
 
 Adding a new attention variant:
   1. Subclass BaseAttention
@@ -21,7 +25,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import torch
 import torch.nn as nn
@@ -29,6 +33,10 @@ import torch.nn.functional as F
 
 from .config import ModelConfig
 from .rope import BasePositionalEncoding, build_pos_encoding
+
+if TYPE_CHECKING:
+    from kv_cache.block_table import LayeredBlockTable
+    from kv_cache.paged_kv_cache import PagedKVCache
 
 
 # ── Shared helper ─────────────────────────────────────────────────────────────
@@ -74,11 +82,24 @@ class BaseAttention(nn.Module, ABC):
     @abstractmethod
     def forward(
         self,
-        x         : torch.Tensor,
-        mask      : Optional[torch.Tensor] = None,
-        use_cache : bool = False,
-        start_pos : int  = 0,
+        x           : torch.Tensor,
+        mask        : Optional[torch.Tensor] = None,
+        use_cache   : bool = False,
+        start_pos   : int  = 0,
+        block_table : Optional["LayeredBlockTable"] = None,
+        kv_cache    : Optional["PagedKVCache"] = None,
     ) -> torch.Tensor:
+        """
+        Args:
+            x           : (B, T, dim) input hidden states
+            mask        : (1, 1, max_T, max_T) additive causal mask
+            use_cache   : populate / read flat KV cache (ignored by PagedAttention)
+            start_pos   : absolute position of x[0] in the sequence
+            block_table : paged block table for this sequence (PagedAttention only)
+            kv_cache    : physical KV pool (PagedAttention only)
+        Returns:
+            (B, T, dim) output hidden states
+        """
         ...
 
     @abstractmethod
@@ -128,10 +149,12 @@ class VanillaAttention(BaseAttention):
 
     def forward(
         self,
-        x         : torch.Tensor,
-        mask      : Optional[torch.Tensor] = None,
-        use_cache : bool = False,
-        start_pos : int  = 0,
+        x           : torch.Tensor,
+        mask        : Optional[torch.Tensor] = None,
+        use_cache   : bool = False,
+        start_pos   : int  = 0,
+        block_table : Optional["LayeredBlockTable"] = None,
+        kv_cache    : Optional["PagedKVCache"] = None,
     ) -> torch.Tensor:
         B, T, _ = x.shape
 
@@ -219,10 +242,12 @@ class GroupedQueryAttention(BaseAttention):
 
     def forward(
         self,
-        x         : torch.Tensor,
-        mask      : Optional[torch.Tensor] = None,
-        use_cache : bool = False,
-        start_pos : int  = 0,
+        x           : torch.Tensor,
+        mask        : Optional[torch.Tensor] = None,
+        use_cache   : bool = False,
+        start_pos   : int  = 0,
+        block_table : Optional["LayeredBlockTable"] = None,
+        kv_cache    : Optional["PagedKVCache"] = None,
     ) -> torch.Tensor:
         B, T, _ = x.shape
 
@@ -289,10 +314,12 @@ class FlashAttention(BaseAttention):
 
     def forward(
         self,
-        x         : torch.Tensor,
-        mask      : Optional[torch.Tensor] = None,
-        use_cache : bool = False,
-        start_pos : int  = 0,
+        x           : torch.Tensor,
+        mask        : Optional[torch.Tensor] = None,
+        use_cache   : bool = False,
+        start_pos   : int  = 0,
+        block_table : Optional["LayeredBlockTable"] = None,
+        kv_cache    : Optional["PagedKVCache"] = None,
     ) -> torch.Tensor:
         raise NotImplementedError(
             f"FlashAttention not yet implemented "
@@ -311,34 +338,97 @@ class PagedAttention(BaseAttention):
     """
     Paged Attention (Kwon et al. 2023 — vLLM).
 
-    KV cache is split into fixed-size blocks (pages) managed by a block
-    allocator in kv_cache/.  Non-contiguous physical pages are gathered by
-    the attention kernel, eliminating fragmentation and enabling fine-grained
-    memory sharing across requests (prefix caching).
+    The model is stateless w.r.t. KV cache — all state lives in the external
+    (PagedKVCache, LayeredBlockTable) pair passed to forward() at call time.
+    This makes it trivial to serve multiple sequences without interference.
 
-    Implementation plan:
-      - Wire the block allocator from kv_cache/block_allocator.py
-      - Write paged KV gather/scatter kernel in kernels/paged_attention.cu
-      - Replace clear_cache() with block table deallocation
+    Differences from GroupedQueryAttention:
+      - No self.cache_k / self.cache_v on the module
+      - K/V written into PagedKVCache via block_table address translation
+      - Attention computed by paged_attention() which gathers K/V from
+        non-contiguous physical blocks
 
-    Until then: stub.
+    Requires:
+        block_table and kv_cache must be provided in forward().
+        The caller (inference engine) manages block allocation/deallocation.
     """
+
+    def __init__(self, cfg: ModelConfig, layer_idx: int = 0) -> None:
+        super().__init__()
+        self.n_heads    = cfg.n_heads
+        self.n_kv_heads = cfg.n_kv_heads
+        self.n_rep      = cfg.n_kv_rep
+        self.head_dim   = cfg.head_dim
+        self.dropout    = cfg.dropout
+        self.layer_idx  = layer_idx
+
+        self.wq = nn.Linear(cfg.dim, cfg.n_heads    * cfg.head_dim, bias=False)
+        self.wk = nn.Linear(cfg.dim, cfg.n_kv_heads * cfg.head_dim, bias=False)
+        self.wv = nn.Linear(cfg.dim, cfg.n_kv_heads * cfg.head_dim, bias=False)
+        self.wo = nn.Linear(cfg.n_heads * cfg.head_dim, cfg.dim,    bias=False)
+
+        self.pos_enc: BasePositionalEncoding = build_pos_encoding(cfg)
 
     def forward(
         self,
-        x         : torch.Tensor,
-        mask      : Optional[torch.Tensor] = None,
-        use_cache : bool = False,
-        start_pos : int  = 0,
+        x           : torch.Tensor,
+        mask        : Optional[torch.Tensor] = None,
+        use_cache   : bool = False,
+        start_pos   : int  = 0,
+        block_table : Optional["LayeredBlockTable"] = None,
+        kv_cache    : Optional["PagedKVCache"] = None,
     ) -> torch.Tensor:
-        raise NotImplementedError(
-            f"PagedAttention not yet implemented "
-            f"(x={tuple(x.shape)}, use_cache={use_cache}, start_pos={start_pos}, "
-            f"mask={'yes' if mask is not None else 'none'}). "
-            f"See kv_cache/ and kernels/paged_attention.cu."
+        from kv_cache.paged_attention import paged_attention
+
+        if block_table is None or kv_cache is None:
+            raise ValueError(
+                "PagedAttention.forward() requires block_table and kv_cache. "
+                "Use attention_type='gqa' for the flat-cache path."
+            )
+
+        B, T, _ = x.shape
+        assert B == 1, "PagedAttention processes one sequence at a time (B=1)"
+
+        # 1. Project Q, K, V
+        q = self.wq(x).view(B, T, self.n_heads,    self.head_dim).transpose(1, 2)
+        k = self.wk(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1, 2)
+        v = self.wv(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1, 2)
+
+        # 2. Apply positional encoding (RoPE)
+        q, k = self.pos_enc(q, k, start_pos)
+
+        # 3. Write K, V into paged pool
+        # k: (1, n_kv_heads, T, head_dim) → (T, n_kv_heads, head_dim) for storage
+        k_write = k.squeeze(0).permute(1, 0, 2)
+        v_write = v.squeeze(0).permute(1, 0, 2)
+        kv_cache.write_tokens(
+            layer       = self.layer_idx,
+            block_table = block_table,
+            k_seq       = k_write,
+            v_seq       = v_write,
+            start_pos   = start_pos,
         )
 
+        # 4. Gather K/V from paged pool and compute attention
+        out = paged_attention(
+            q           = q,
+            layer_idx   = self.layer_idx,
+            block_table = block_table,
+            kv_cache    = kv_cache,
+            n_heads     = self.n_heads,
+            n_kv_heads  = self.n_kv_heads,
+            head_dim    = self.head_dim,
+            start_pos   = start_pos,
+            causal_mask = mask,
+            dropout_p   = self.dropout if self.training else 0.0,
+        )   # (1, T, dim)
+
+        # 5. Output projection
+        return self.wo(out)
+
     def clear_cache(self) -> None:
+        # No module-level cache — state lives in the external PagedKVCache.
+        # Block deallocation is the caller's responsibility via block_table.free().
         pass
 
 

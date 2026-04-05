@@ -24,10 +24,14 @@ KV cache lifecycle:
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional
 
 import torch
 import torch.nn as nn
+
+if TYPE_CHECKING:
+    from kv_cache.block_table import LayeredBlockTable
+    from kv_cache.paged_kv_cache import PagedKVCache
 
 from .config import ModelConfig
 from .embeddings import TokenEmbedding
@@ -90,42 +94,42 @@ class Transformer(nn.Module):
 
     def forward(
         self,
-        idx       : torch.Tensor,   # (B, T)  integer token IDs
-        use_cache : bool = False,    # True → populate / read flat KV caches
-        start_pos : int  = 0,       # absolute position of the first token in idx
-    ) -> torch.Tensor:              # (B, T, vocab_size) logits
+        idx         : torch.Tensor,
+        use_cache   : bool = False,
+        start_pos   : int  = 0,
+        block_table : Optional["LayeredBlockTable"] = None,
+        kv_cache    : Optional["PagedKVCache"] = None,
+    ) -> torch.Tensor:
         """
         Args:
-            idx       : Token IDs, shape (B, T).
-            use_cache : If True, each Attention layer stores K/V for future
-                        decode steps.  Set start_pos accordingly.
-            start_pos : Index of the first token in `idx` within the full
-                        sequence.  0 for prefill; len(prompt) for the first
-                        decode step.
+            idx         : (B, T) integer token IDs.
+            use_cache   : populate / read flat KV caches (gqa / vanilla path).
+            start_pos   : absolute position of idx[0] in the sequence.
+            block_table : per-sequence block map (paged attention path).
+            kv_cache    : physical KV pool (paged attention path).
         Returns:
-            logits    : (B, T, vocab_size)
+            logits : (B, T, vocab_size)
         """
         B, T = idx.shape
         assert T <= self.cfg.max_seq_len, (
             f"Sequence length {T} exceeds max_seq_len {self.cfg.max_seq_len}"
         )
 
-        # 1. Token embeddings — no positional offset; RoPE handles position
-        x = self.token_emb(idx)                       # (B, T, dim)
+        x    = self.token_emb(idx)
+        mask = self.causal_mask
 
-        # 2. Full causal mask — each Attention layer slices the rows/cols it
-        #    needs using start_pos, so the full mask must be passed here.
-        mask = self.causal_mask   # (1, 1, max_seq_len, max_seq_len)
-
-        # 3. Pass through all transformer layers
         for layer in self.layers:
-            x = layer(x, mask=mask, use_cache=use_cache, start_pos=start_pos)
+            x = layer(
+                x,
+                mask=mask,
+                use_cache=use_cache,
+                start_pos=start_pos,
+                block_table=block_table,
+                kv_cache=kv_cache,
+            )
 
-        # 4. Final normalisation
-        x = self.norm(x)                              # (B, T, dim)
-
-        # 5. Project to vocabulary
-        logits = self.lm_head(x)                      # (B, T, vocab_size)
+        x      = self.norm(x)
+        logits = self.lm_head(x)
         return logits
 
     # ── Utility ───────────────────────────────────────────────────────────────
