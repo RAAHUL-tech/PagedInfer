@@ -1,0 +1,45 @@
+# PagedInfer — Model Configuration
+# All hyperparameters live here. The ModelConfig dataclass loads this file.
+
+model:
+  # ── Vocabulary ──────────────────────────────────────────────────────────────
+  vocab_size: 32000          # LLaMA tokenizer vocab
+
+  # ── Architecture ────────────────────────────────────────────────────────────
+  dim: 768                   # d_model (embedding / hidden dimension)
+  n_layers: 12               # number of transformer blocks
+  n_heads: 12                # query heads
+  n_kv_heads: 6              # key/value heads; n_kv_heads < n_heads → GQA
+  max_seq_len: 512           # context window (positions)
+  ffn_dim_mult: 2.6875       # SwiGLU hidden = round(ffn_dim_mult * dim, 256)
+  norm_eps: 1.0e-5           # RMSNorm / LayerNorm epsilon
+  rope_theta: 10000.0        # RoPE base frequency θ
+  dropout: 0.0               # 0 for inference; set > 0 for fine-tuning
+
+  # ── Pluggable backends (swap without changing model code) ──────────────────
+  # attention_type: "vanilla" | "gqa" | "flash" | "paged"
+  #   vanilla — standard MHA (n_kv_heads == n_heads)
+  #   gqa     — Grouped Query Attention / MQA (n_kv_heads <= n_heads)
+  #   flash   — FlashAttention kernel (stub; see kernels/flash_attention.cu)
+  #   paged   — paged KV cache attention (stub; see kv_cache/ and kernels/)
+  attention_type: "gqa"
+
+  # pos_encoding: "rope" | "alibi" | "none"
+  #   rope  — Rotary Positional Embedding (LLaMA default)
+  #   alibi — ALiBi position bias (no learned params, good for length generalisation)
+  #   none  — no positional encoding (e.g. if handled externally)
+  pos_encoding: "rope"
+
+  # norm_type: "rmsnorm" | "layernorm"
+  norm_type: "rmsnorm"
+
+  # ffn_type: "swiglu" | "geglu" | "mlp"
+  ffn_type: "swiglu"
+
+# ── Inference defaults ────────────────────────────────────────────────────────
+inference:
+  max_new_tokens: 200
+  temperature: 0.8
+  top_p: 0.9
+  top_k: 50
+  use_kv_cache: true         # enables flat KV cache; paged cache overrides this
