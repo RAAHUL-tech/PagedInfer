@@ -68,26 +68,34 @@ class PagedKVCache:
         self.pool_k: List[Dict[int, torch.Tensor]] = [{} for _ in range(n_layers)]
         self.pool_v: List[Dict[int, torch.Tensor]] = [{} for _ in range(n_layers)]
 
+        # Maps physical block_id → the layer that owns it.
+        # Enables O(1) free_blocks() lookup instead of scanning all n_layers dicts.
+        self._id_to_layer: Dict[int, int] = {}
+
     # ── Allocation / deallocation ─────────────────────────────────────────────
 
     def allocate_block_for_layer(self, layer: int, block_id: int) -> None:
         """
         Provision the GPU tensor for one (layer, block_id) slot.
         Called by LayeredBlockTable.append_token() — once per layer per logical block.
+        Records layer ownership in _id_to_layer for O(1) free.
         """
         if block_id not in self.pool_k[layer]:
             shape = (self.block_size, self.n_kv_heads, self.head_dim)
             self.pool_k[layer][block_id] = torch.zeros(shape, dtype=self.dtype, device=self.device)
             self.pool_v[layer][block_id] = torch.zeros(shape, dtype=self.dtype, device=self.device)
+            self._id_to_layer[block_id]  = layer
 
     def free_blocks(self, block_ids: List[int]) -> None:
         """
-        Release GPU tensors for a list of block ids.
-        Each id belongs to exactly one layer; we search all layers but only
-        the owning layer will have the id in its dict.
+        Release GPU tensors for a list of physical block ids.
+
+        Uses _id_to_layer to jump directly to the owning layer dict — O(1) per
+        block instead of scanning all n_layers dicts.
         """
         for bid in block_ids:
-            for layer in range(self.n_layers):
+            layer = self._id_to_layer.pop(bid, None)
+            if layer is not None:
                 self.pool_k[layer].pop(bid, None)
                 self.pool_v[layer].pop(bid, None)
 

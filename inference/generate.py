@@ -13,13 +13,13 @@ Sampling strategy (mirrors notebook cell 31):
   4. Categorical sample    : draw one token from the remaining distribution
 
 Usage:
-    python inference/generate.py \\
-        --checkpoint llama_ckpt.pt \\
-        --prompt "Once upon a time" \\
-        --max_new_tokens 200 \\
-        --temperature 0.8 \\
-        --top_k 50 \\
-        --top_p 0.9
+    uv run python inference/generate.py \
+    --checkpoint model_checkpoint/llama_ckpt.pt \
+    --prompt "Once upon a time" \
+    --max_new_tokens 200 \
+    --temperature 0.8 \
+    --top_k 50 \
+    --top_p 0.9
 
     # greedy decode (deterministic)
     python inference/generate.py --checkpoint llama_ckpt.pt \\

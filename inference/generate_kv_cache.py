@@ -21,12 +21,12 @@ Sampling strategy (mirrors notebook cell 36):
   3. Categorical sample
 
 Usage:
-    python inference/generate_kv_cache.py \\
-        --checkpoint llama_ckpt.pt \\
-        --prompt "Once upon a time" \\
-        --max_new_tokens 200 \\
-        --temperature 0.8 \\
-        --top_k 50
+    uv run python inference/generate_kv_cache.py \
+    --checkpoint model_checkpoint/llama_ckpt.pt \
+    --prompt "Once upon a time" \
+    --max_new_tokens 200 \
+    --temperature 0.8 \
+    --top_k 50
 
     # compare against no-cache for a speed benchmark
     python inference/generate_kv_cache.py \\
