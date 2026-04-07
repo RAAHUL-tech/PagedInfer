@@ -36,6 +36,7 @@ from .rope import BasePositionalEncoding, build_pos_encoding
 
 if TYPE_CHECKING:
     from kv_cache.block_table import LayeredBlockTable
+    from kv_cache.gpu_paged_kv_cache import GPUPagedKVCache
     from kv_cache.paged_kv_cache import PagedKVCache
 
 
@@ -96,7 +97,8 @@ class BaseAttention(nn.Module, ABC):
             use_cache   : populate / read flat KV cache (ignored by PagedAttention)
             start_pos   : absolute position of x[0] in the sequence
             block_table : paged block table for this sequence (PagedAttention only)
-            kv_cache    : physical KV pool (PagedAttention only)
+            kv_cache    : physical KV pool — PagedKVCache (CPU) or
+                          GPUPagedKVCache (CUDA, uses paged_attn kernel)
         Returns:
             (B, T, dim) output hidden states
         """
@@ -378,8 +380,6 @@ class PagedAttention(BaseAttention):
         block_table : Optional["LayeredBlockTable"] = None,
         kv_cache    : Optional["PagedKVCache"] = None,
     ) -> torch.Tensor:
-        from kv_cache.paged_attention import paged_attention
-
         if block_table is None or kv_cache is None:
             raise ValueError(
                 "PagedAttention.forward() requires block_table and kv_cache. "
@@ -399,8 +399,8 @@ class PagedAttention(BaseAttention):
 
         # 3. Write K, V into paged pool
         # k: (1, n_kv_heads, T, head_dim) → (T, n_kv_heads, head_dim) for storage
-        k_write = k.squeeze(0).permute(1, 0, 2)
-        v_write = v.squeeze(0).permute(1, 0, 2)
+        k_write = k.squeeze(0).permute(1, 0, 2).contiguous()
+        v_write = v.squeeze(0).permute(1, 0, 2).contiguous()
         kv_cache.write_tokens(
             layer       = self.layer_idx,
             block_table = block_table,
@@ -409,22 +409,64 @@ class PagedAttention(BaseAttention):
             start_pos   = start_pos,
         )
 
-        # 4. Gather K/V from paged pool and compute attention
-        out = paged_attention(
-            q           = q,
-            layer_idx   = self.layer_idx,
-            block_table = block_table,
-            kv_cache    = kv_cache,
-            n_heads     = self.n_heads,
-            n_kv_heads  = self.n_kv_heads,
-            head_dim    = self.head_dim,
-            start_pos   = start_pos,
-            causal_mask = mask,
-            dropout_p   = self.dropout if self.training else 0.0,
-        )   # (1, T, dim)
+        # 4. Compute attention — dispatch to GPU kernel or Python fallback
+        #    GPUPagedKVCache: reads K/V from pool inside CUDA kernel (no gather)
+        #    PagedKVCache:    gathers K/V to contiguous tensors, then runs SDPA
+        out = self._compute_attention(q, block_table, kv_cache, start_pos, mask)
 
         # 5. Output projection
         return self.wo(out)
+
+    def _compute_attention(
+        self,
+        q           : torch.Tensor,               # (1, n_heads, T_q, head_dim)
+        block_table : "LayeredBlockTable",
+        kv_cache,                                  # PagedKVCache or GPUPagedKVCache
+        start_pos   : int,
+        mask        : Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """
+        Dispatch to CUDA paged-attention kernel or Python-level SDPA.
+
+        GPU path (GPUPagedKVCache):
+          - Calls kv_cache.compute_paged_attn() which runs the CUDA kernel.
+          - K/V are fetched from the pool inside the kernel — no Python gather.
+          - Causal masking and online softmax handled entirely in CUDA.
+
+        CPU path (PagedKVCache):
+          - Calls paged_attention() which gathers K/V to contiguous tensors
+            and runs torch.nn.functional.scaled_dot_product_attention.
+        """
+        # Import here to avoid circular imports at module level
+        from kv_cache.gpu_paged_kv_cache import GPUPagedKVCache as _GPU
+
+        if isinstance(kv_cache, _GPU):
+            # GPU path: CUDA paged attention kernel
+            # Returns (1, T_q, n_heads * head_dim)
+            return kv_cache.compute_paged_attn(
+                q           = q,
+                layer       = self.layer_idx,
+                block_table = block_table,
+                n_heads     = self.n_heads,
+                n_kv_heads  = self.n_kv_heads,
+                head_dim    = self.head_dim,
+                start_pos   = start_pos,
+            )
+        else:
+            # CPU / Python path: gather K/V then SDPA
+            from kv_cache.paged_attention import paged_attention
+            return paged_attention(
+                q           = q,
+                layer_idx   = self.layer_idx,
+                block_table = block_table,
+                kv_cache    = kv_cache,
+                n_heads     = self.n_heads,
+                n_kv_heads  = self.n_kv_heads,
+                head_dim    = self.head_dim,
+                start_pos   = start_pos,
+                causal_mask = mask,
+                dropout_p   = self.dropout if self.training else 0.0,
+            )   # (1, T, dim)
 
     def clear_cache(self) -> None:
         # No module-level cache — state lives in the external PagedKVCache.
