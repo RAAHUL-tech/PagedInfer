@@ -1,5 +1,5 @@
 """
-Shared checkpoint + tokenizer loading logic for inference scripts.
+inference/model_loader.py — shared checkpoint + tokenizer loading for all inference scripts.
 
 Checkpoint format (written by the notebook):
     {

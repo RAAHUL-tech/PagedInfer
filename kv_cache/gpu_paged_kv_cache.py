@@ -52,8 +52,8 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import torch
 
-from kernels.kv_cache_kernels import KVKernelOps, load_kv_kernels
-from kernels.paged_attention_kernels import PagedAttnKernelOps, load_paged_attn_kernels
+from kernels.kv_io_ops import KVKernelOps, load_kv_kernels
+from kernels.attn_decode_ops import PagedAttnKernelOps, load_paged_attn_kernels
 
 if TYPE_CHECKING:
     from .block_table import LayeredBlockTable
@@ -206,6 +206,35 @@ class GPUPagedKVCache:
                 self._id_to_layer.pop(bid)
 
     # ── Write ─────────────────────────────────────────────────────────────────
+
+    def batch_write_kv(
+        self,
+        k_all   : torch.Tensor,   # (total_tokens, n_kv_heads, head_dim) fp16
+        v_all   : torch.Tensor,
+        phys_t  : torch.Tensor,   # (total_tokens,) int32 — pre-built physical ids
+        slots_t : torch.Tensor,   # (total_tokens,) int32 — pre-built slot offsets
+    ) -> None:
+        """
+        Scatter K/V for multiple sequences in ONE CUDA kernel launch.
+
+        Used by ContinuousBatchingEngine.forward_unified() which pre-builds
+        the phys/slots tensors for all active sequences at once, then calls
+        this method to write all tokens with a single launch instead of one
+        per sequence per layer.
+
+        Args:
+            k_all   : Concatenated K across all seqs, (total_tokens, NKV, HD)
+            v_all   : Concatenated V across all seqs, (total_tokens, NKV, HD)
+            phys_t  : Physical block id for each token
+            slots_t : Slot offset within block for each token
+        """
+        self._kv_ops.write_kv_cuda(
+            self.pool_k, self.pool_v,
+            k_all.half().contiguous(),
+            v_all.half().contiguous(),
+            phys_t.contiguous().int(),
+            slots_t.contiguous().int(),
+        )
 
     def write_tokens(
         self,

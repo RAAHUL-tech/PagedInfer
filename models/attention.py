@@ -454,7 +454,7 @@ class PagedAttention(BaseAttention):
             )
         else:
             # CPU / Python path: gather K/V then SDPA
-            from kv_cache.paged_attention import paged_attention
+            from kv_cache.cpu_attn import paged_attention
             return paged_attention(
                 q           = q,
                 layer_idx   = self.layer_idx,

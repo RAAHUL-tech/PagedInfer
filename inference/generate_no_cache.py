@@ -1,5 +1,5 @@
 """
-Inference — no KV cache.
+inference/generate_no_cache.py — inference with no KV cache (full recompute every step).
 
 Every generation step runs a full forward pass over the entire sequence grown
 so far.  Simple and correct; progressively slower as the sequence grows because
@@ -40,7 +40,7 @@ import torch.nn.functional as F
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models import ModelConfig, Transformer
-from inference._load import load_model, load_tokenizer
+from inference.model_loader import load_model, load_tokenizer
 
 
 # ── Sampling ──────────────────────────────────────────────────────────────────

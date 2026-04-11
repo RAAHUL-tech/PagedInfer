@@ -1,22 +1,41 @@
 """
-kernels/kv_cache_kernels.py — compile kv_cache_kernels.cu and expose Python wrappers.
+kernels/kv_io_ops.py
+────────────────────
+Compiles kv_io.cu and exposes Python wrappers for the three KV pool I/O
+CUDA kernels: block initialisation, token scatter (write), token gather (read).
 
-Only runs on CUDA. Import guard at the top of this file prevents errors on CPU machines.
+These kernels are the low-level building blocks used by both GPUPagedKVCache
+(single-sequence generation) and the continuous batching engine to move K/V
+tensors in and out of the paged pool without CPU involvement.
 
-Public API (only callable after load_kv_kernels()):
-    init_blocks_cuda(pool_k, pool_v, block_ids)
-    write_kv_cuda(pool_k, pool_v, k_in, v_in, phys_blocks, slots)
-    read_kv_cuda(pool_k, pool_v, phys_blocks, slots) -> (k_out, v_out)
-    clear_blocks_cuda(pool_k, pool_v, block_ids)    # alias for init (zero-fill)
+  kv_init_blocks — zero-fill newly allocated physical blocks
+                   (called once per block at allocation time to prevent stale K/V
+                    from previous sequences leaking into new ones)
+
+  kv_write       — scatter K/V tokens from a contiguous (T, NKV, HD) buffer
+                   into their (phys_block_id, slot_offset) addresses in the pool
+                   (called during prefill and each decode step)
+
+  kv_read        — gather K/V tokens from non-contiguous pool addresses back into
+                   a contiguous (T, NKV, HD) buffer
+                   (called before Python-level SDPA on CPU path, or during swap-out)
+
+Public API:
+    KVKernelOps.init_blocks_cuda(pool_k, pool_v, block_ids)
+    KVKernelOps.write_kv_cuda(pool_k, pool_v, k_in, v_in, phys_t, slots_t)
+    KVKernelOps.read_kv_cuda(pool_k, pool_v, phys_t, slots_t) -> (k_out, v_out)
+    KVKernelOps.clear_blocks_cuda(pool_k, pool_v, block_ids)  # zero on free
+
+    load_kv_kernels(device, verbose) -> KVKernelOps   # singleton per process
 
 Compilation:
-    nvcc is invoked once per process (or when the .so is missing / stale).
-    The compiled .so is written to /tmp/pagedinfer_kv_ops.so.
-    SM arch is detected automatically from the current GPU.
+    nvcc compiles kv_io.cu → /tmp/pagedinfer_kv_io.so on first use.
+    SM arch is auto-detected from torch.cuda.get_device_capability().
+    Re-compiled automatically when kv_io.cu is newer than the cached .so.
 
 Usage:
-    from kernels.kv_cache_kernels import load_kv_kernels
-    ops = load_kv_kernels()          # compiles if needed, returns KVKernelOps
+    from kernels.kv_io_ops import load_kv_kernels
+    ops = load_kv_kernels()
     ops.write_kv_cuda(pool_k, pool_v, k, v, phys_t, slot_t)
 """
 
@@ -31,8 +50,8 @@ from typing import List, NamedTuple, Optional
 
 import torch
 
-_KERNEL_SRC = Path(__file__).parent / "kv_cache_kernels.cu"
-_SO_PATH    = Path("/tmp/pagedinfer_kv_ops.so")
+_KERNEL_SRC = Path(__file__).parent / "kv_io.cu"
+_SO_PATH    = Path("/tmp/pagedinfer_kv_io.so")
 
 
 def _so_is_stale() -> bool:
@@ -43,7 +62,7 @@ def _so_is_stale() -> bool:
 
 
 def _compile(verbose: bool = True) -> None:
-    """Compile kv_cache_kernels.cu → /tmp/pagedinfer_kv_ops.so via nvcc."""
+    """Compile kv_io.cu → /tmp/pagedinfer_kv_io.so via nvcc."""
     major, minor = torch.cuda.get_device_capability(0)
     arch = f"-arch=sm_{major}{minor}"
 

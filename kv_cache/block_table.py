@@ -162,6 +162,21 @@ class LayeredBlockTable:
         """Logical blocks required to hold n_tokens."""
         return math.ceil(n_tokens / self.block_size)
 
+    def new_blocks_for_tokens(self, n_more: int) -> int:
+        """
+        How many NEW logical blocks need to be allocated to accommodate
+        n_more additional tokens beyond the current num_tokens.
+
+        Returns 0 if there is enough room in the last (partial) block.
+        Returns ceil((n_more - free_slots_in_last_block) / block_size) otherwise.
+
+        Used by Scheduler to decide whether to preempt before a decode step.
+        """
+        free_slots = self.num_blocks * self.block_size - self.num_tokens
+        if n_more <= free_slots:
+            return 0
+        return math.ceil((n_more - free_slots) / self.block_size)
+
     def __repr__(self) -> str:
         return (
             f"LayeredBlockTable(seq={self.seq_id}, tokens={self.num_tokens}, "
