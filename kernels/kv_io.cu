@@ -1,5 +1,5 @@
 /*
- * kv_cache_kernels.cu — CUDA kernels for paged KV cache I/O
+ * CUDA kernels for paged KV cache I/O
  *
  * Three kernels:
  *

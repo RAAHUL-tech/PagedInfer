@@ -1,5 +1,5 @@
 """
-Inference — with flat KV cache.
+inference/generate_flat_kv.py — inference with a flat (non-paged) KV cache.
 
 Two-phase generation (mirrors notebook cell 36):
 
@@ -21,7 +21,7 @@ Sampling strategy (mirrors notebook cell 36):
   3. Categorical sample
 
 Usage:
-    uv run python inference/generate_kv_cache.py \
+    uv run python inference/generate_flat_kv.py \
     --checkpoint model_checkpoint/llama_ckpt.pt \
     --prompt "Once upon a time" \
     --max_new_tokens 200 \
@@ -29,7 +29,7 @@ Usage:
     --top_k 50
 
     # compare against no-cache for a speed benchmark
-    python inference/generate_kv_cache.py \\
+    python inference/generate_flat_kv.py \\
         --checkpoint llama_ckpt.pt --benchmark
 """
 
@@ -47,7 +47,7 @@ import torch.nn.functional as F
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models import ModelConfig, Transformer
-from inference._load import load_model, load_tokenizer
+from inference.model_loader import load_model, load_tokenizer
 
 
 # ── Sampling ──────────────────────────────────────────────────────────────────

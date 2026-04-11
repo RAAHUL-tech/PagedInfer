@@ -1,5 +1,5 @@
 """
-Inference — GPU paged KV cache with CUDA kernels.
+inference/generate_paged_gpu.py — inference with GPU-backed paged KV cache and CUDA kernels.
 
 Full end-to-end inference using a contiguous GPU KV pool and custom CUDA
 kernels for K/V read, write, and paged attention computation.
@@ -59,7 +59,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from kv_cache import BlockAllocator, LayeredBlockTable
 from kv_cache.gpu_paged_kv_cache import GPUPagedKVCache
 from models import ModelConfig, Transformer
-from inference._load import load_tokenizer
+from inference.model_loader import load_tokenizer
 
 
 # ── Sampling ──────────────────────────────────────────────────────────────────
@@ -129,7 +129,7 @@ def _load_model_gpu(checkpoint: str, device: str) -> tuple[Transformer, dict]:
 
     Returns (model, raw_config_dict).
     """
-    from inference._load import _remap_state_dict, _MODEL_FIELDS
+    from inference.model_loader import _remap_state_dict, _MODEL_FIELDS
 
     torch.cuda.empty_cache()
     gc.collect()
@@ -373,7 +373,7 @@ def main() -> None:
     args = parse_args()
 
     if not torch.cuda.is_available():
-        print("ERROR: CUDA not available. Use generate_paged_kv_cache.py for CPU inference.")
+        print("ERROR: CUDA not available. Use generate_paged_cpu.py for CPU inference.")
         sys.exit(1)
 
     device = args.device

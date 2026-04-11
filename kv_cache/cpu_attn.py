@@ -1,24 +1,29 @@
 """
-paged_attention() — gather-based attention kernel for paged KV cache.
+kv_cache/cpu_attn.py
+────────────────────
+CPU / Python fallback for paged attention.  Used when kv_cache is a
+PagedKVCache (dict-of-tensors, CPU-friendly) rather than GPUPagedKVCache.
 
-Unlike standard attention that reads from a contiguous (B, n_heads, T, head_dim)
-tensor, this function:
+What it does:
+  1. Gathers K and V for all past tokens from the paged pool using the
+     block table's logical→physical address translation (PagedKVCache.read_sequence).
+  2. Reshapes the gathered tensors into the (B, n_heads, T, head_dim) layout.
+  3. Runs torch.nn.functional.scaled_dot_product_attention over the result.
 
-  1. Gathers K and V token-by-token from the physical block pool using the
-     block table's logical→physical address translation.
-  2. Reshapes the gathered tensors to the layout expected by the dot-product.
-  3. Runs standard scaled dot-product attention over the gathered K/V.
+This path is intentionally simple — it materialises the full K/V tensor in
+memory before attention.  For GPU inference use GPUPagedKVCache instead, which
+routes attention through attn_decode.cu (single-seq) or attn_continuous.cu
+(batched continuous batching), avoiding the explicit gather step.
 
-This is the functional core of vLLM's paged attention, expressed as a plain
-Python function operating on torch tensors.  The future CUDA kernel in
-kernels/paged_attention.cu will replace step 1-3 with a fused gather+attention
-pass that avoids materialising the full K/V tensor in HBM.
+Called from:
+    models/attention.py — PagedAttention._compute_attention() dispatches here
+    when isinstance(kv_cache, PagedKVCache) (not GPUPagedKVCache).
 
-Shapes convention (single sequence, B=1):
+Shapes (single sequence, B=1):
     q           : (1, n_heads,    T_q, head_dim)
-    k_gathered  : (T_kv, n_kv_heads, head_dim)   ← gathered from paged pool
+    k_gathered  : (T_kv, n_kv_heads, head_dim)   ← from PagedKVCache.read_sequence()
     k (reshaped): (1, n_kv_heads, T_kv, head_dim)
-    output      : (1, T_q, dim)                  ← merged heads
+    output      : (1, T_q, n_heads * head_dim)
 """
 
 from __future__ import annotations

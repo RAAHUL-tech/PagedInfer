@@ -1,27 +1,42 @@
 """
-kernels/paged_attention_kernels.py — compile paged_attention.cu and expose
-a Python wrapper for the paged attention CUDA kernel.
+kernels/attn_decode_ops.py
+──────────────────────────
+Compiles attn_decode.cu and exposes a Python wrapper for the single-sequence
+paged attention CUDA kernel used during autoregressive generation
+(generate_gpu.py — one request at a time).
 
-The kernel computes multi-head attention directly against the paged KV pool —
-no separate gather step needed.  K and V are read on-the-fly from
-non-contiguous physical blocks via (phys_blocks, slots) index arrays.
+The kernel reads K and V DIRECTLY from the paged pool during attention
+computation — no separate kv_read gather step is needed before SDPA.
+(phys_blocks, slots) index arrays tell each thread where its KV token lives.
+
+  paged_attn_kernel
+    Computes:  softmax(Q @ K^T / sqrt(d)) @ V
+    K/V source: fetched inside the kernel from the paged pool
+    Causal mask: token t masked when t > start_pos + q_tok
+    GQA:        kv_head = q_head / (n_heads / n_kv_heads)
+    Numerics:   online softmax (flash-attention style), fp32 accumulation
+
+    Grid  = (T_q, N_HEADS)    — one CUDA block per (query_token, head)
+    Block = (HEAD_DIM,)       — one thread per output dimension
+    Smem  = 2 × HEAD_DIM × 4 bytes
+
+This kernel handles ONLY ONE sequence at a time.  For multi-sequence
+continuous batching use attn_continuous_ops (attn_continuous.cu) instead.
 
 Public API:
     PagedAttnKernelOps.paged_attention_cuda(
         q, pool_k, pool_v, phys_blocks, slots,
         T_q, T_total, start_pos,
         n_heads, n_kv_heads, head_dim, block_size, scale
-    ) -> torch.Tensor   # (T_q, N_HEADS, HEAD_DIM) fp16
+    ) -> (T_q, N_HEADS, HEAD_DIM) fp16
 
-    load_paged_attn_kernels(device, verbose) -> PagedAttnKernelOps
+    load_paged_attn_kernels(device, verbose) -> PagedAttnKernelOps  # singleton
 
-Kernel dispatch:
-    Grid  = (T_q, N_HEADS)    — one CUDA block per (query_token, head)
-    Block = (HEAD_DIM,)       — one thread per output dimension
-    Smem  = 2 × HEAD_DIM × 4 bytes (dot-product scratch + V accumulator)
+Compilation:
+    nvcc compiles attn_decode.cu → /tmp/pagedinfer_attn_decode.so on first use.
 
 Usage:
-    from kernels.paged_attention_kernels import load_paged_attn_kernels
+    from kernels.attn_decode_ops import load_paged_attn_kernels
     ops = load_paged_attn_kernels()
     out = ops.paged_attention_cuda(q, pool_k, pool_v, phys_t, slot_t, ...)
 """
@@ -36,8 +51,8 @@ from typing import List, Optional
 
 import torch
 
-_KERNEL_SRC = Path(__file__).parent / "paged_attention.cu"
-_SO_PATH    = Path("/tmp/pagedinfer_paged_attn.so")
+_KERNEL_SRC = Path(__file__).parent / "attn_decode.cu"
+_SO_PATH    = Path("/tmp/pagedinfer_attn_decode.so")
 
 
 def _so_is_stale() -> bool:
@@ -47,7 +62,7 @@ def _so_is_stale() -> bool:
 
 
 def _compile(verbose: bool = True) -> None:
-    """Compile paged_attention.cu → /tmp/pagedinfer_paged_attn.so via nvcc."""
+    """Compile attn_decode.cu → /tmp/pagedinfer_attn_decode.so via nvcc."""
     major, minor = torch.cuda.get_device_capability(0)
     arch = f"-arch=sm_{major}{minor}"
 

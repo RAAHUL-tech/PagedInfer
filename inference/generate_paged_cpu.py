@@ -1,7 +1,7 @@
 """
-Inference — paged KV cache (vLLM-style).
+inference/generate_paged_cpu.py — inference with CPU-backed paged KV cache (vLLM-style).
 
-Two-phase generation identical to generate_kv_cache.py in structure, but
+Two-phase generation identical to generate_flat_kv.py in structure, but
 KV state is stored in a block-paged pool instead of flat tensors:
 
   Prefill  — process the full prompt with block_table + kv_cache;
@@ -16,19 +16,19 @@ Memory comparison printed at the end:
                             in the last block only).
 
 Usage:
-    python inference/generate_paged_kv_cache.py \\
+    python inference/generate_paged_cpu.py \\
         --checkpoint model_checkpoint/llama_ckpt.pt \\
         --prompt "Once upon a time" \\
         --max_new_tokens 200
 
     # explicit paged config
-    python inference/generate_paged_kv_cache.py \\
+    python inference/generate_paged_cpu.py \\
         --checkpoint model_checkpoint/llama_ckpt.pt \\
         --prompt "Once upon a time" \\
         --block_size 16 --n_logical_blocks 256
 
     # memory-only report (no generation)
-    python inference/generate_paged_kv_cache.py \\
+    python inference/generate_paged_cpu.py \\
         --checkpoint model_checkpoint/llama_ckpt.pt \\
         --memory_report
 """
@@ -49,7 +49,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from kv_cache import BlockAllocator, LayeredBlockTable, PagedKVCache
 from models import ModelConfig, Transformer
-from inference._load import load_tokenizer
+from inference.model_loader import load_tokenizer
 
 
 # ── Sampling ──────────────────────────────────────────────────────────────────
@@ -296,7 +296,7 @@ def main() -> None:
     # load_model() reads config from the checkpoint then builds Transformer —
     # we intercept by loading the raw checkpoint ourselves, patching the config,
     # then delegating the weight mapping to _remap_state_dict.
-    from inference._load import _remap_state_dict, _MODEL_FIELDS
+    from inference.model_loader import _remap_state_dict, _MODEL_FIELDS
 
     raw        = torch.load(args.checkpoint, map_location=args.device, weights_only=True)
     raw_config = raw.get("config", {}) if isinstance(raw, dict) else {}

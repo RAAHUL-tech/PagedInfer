@@ -1,5 +1,5 @@
 /*
- * paged_attention.cu — CUDA kernel for paged attention computation.
+ * CUDA kernel for paged attention computation. Works for single sequence.
  *
  * Implements the core paged attention operation:
  *
