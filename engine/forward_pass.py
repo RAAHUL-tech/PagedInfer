@@ -109,11 +109,11 @@ def forward_unified(
     cfg = model.cfg
 
     # ── Access RoPE cos/sin tables from the model's positional encoding ───────
-    # model.layers[0].attention.pos_enc has _cos_cached / _sin_cached buffers
-    # pre-computed up to max_seq_len in RotaryEmbedding.__init__
+    # model.layers[0].attention.pos_enc is a RotaryEmbedding whose buffers are
+    # registered as cos_table / sin_table in models/rope.py
     rope = model.layers[0].attention.pos_enc
-    cos_tbl = rope._cos_cached.to(device)   # (max_seq_len, head_dim)
-    sin_tbl = rope._sin_cached.to(device)
+    cos_tbl = rope.cos_table.to(device)   # (max_seq_len, head_dim)
+    sin_tbl = rope.sin_table.to(device)
 
     # ── Per-seq metadata ──────────────────────────────────────────────────────
     q_lens_list    : List[int] = []
