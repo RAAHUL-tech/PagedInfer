@@ -68,6 +68,10 @@ class BlockAllocator:
 
     # ── Stats ─────────────────────────────────────────────────────────────────
 
+    def can_allocate(self, n: int = 1) -> bool:
+        """Return True if at least `n` free blocks are available."""
+        return len(self._free) >= n
+
     @property
     def n_free(self) -> int:
         return len(self._free)
