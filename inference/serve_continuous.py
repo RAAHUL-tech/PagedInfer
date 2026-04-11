@@ -254,14 +254,20 @@ def main() -> None:
 
     # ── Static baseline comparison ────────────────────────────────────────────
     if args.compare_static:
+        # Free the engine (model weights + KV pool) before loading a second model.
+        # Without this, two copies of the model coexist in GPU RAM leaving no
+        # room for the static baseline's KV cache.
+        cb_tok_s = engine.metrics.total_tokens_gen / cb_elapsed
+        del engine
         torch.cuda.empty_cache(); gc.collect()
         static_elapsed = _static_baseline(
             args.checkpoint, prompts, tokenizer, device,
             args.block_size, args.kv_budget_gb,
         )
         static_toks = sum(n for _, n in prompts)
-        print(f"  Static batching     : {static_toks / static_elapsed:.1f} tok/s")
-        speedup = (engine.metrics.total_tokens_gen / cb_elapsed) / (static_toks / static_elapsed)
+        static_tok_s = static_toks / static_elapsed
+        print(f"  Static batching     : {static_tok_s:.1f} tok/s")
+        speedup = cb_tok_s / static_tok_s
         print(f"  Speedup (CB / static): {speedup:.2f}×")
 
 
