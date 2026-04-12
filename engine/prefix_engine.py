@@ -545,6 +545,18 @@ class PrefixAwareEngine:
                         finished_this_step.append(self._finish(seq))
                     elif seq not in self.running:
                         self.running.append(seq)
+                else:
+                    # More chunks remain — push back to waiting heap so it is
+                    # scheduled again next iteration.  Slightly elevated priority
+                    # (- 0.5) so it resumes before brand-new requests.
+                    seq.status = SeqStatus.PREFILL
+                    if not any(item[2].seq_id == seq.seq_id
+                               for item in self._waiting_heap):
+                        heapq.heappush(
+                            self._waiting_heap,
+                            (seq.request.priority - 0.5, self._heap_counter, seq),
+                        )
+                        self._heap_counter += 1
 
             # ── Process decode results ────────────────────────────────────────
             for seq, logits in zip(active_decode, decode_logits):
