@@ -18,6 +18,11 @@ Components:
                            All I/O goes through CUDA kernels (kernels/kv_io_ops.py).
     cpu_attn.py          paged_attention() — Python-level gather + SDPA fallback.
                          Used by PagedAttention when kv_cache is a PagedKVCache.
+    prefix_cache.py      PrefixCache — hash-based KV block store with LRU eviction.
+                         Reuses physical blocks for shared prompt prefixes across
+                         requests, avoiding redundant forward passes.
+    prefix_block_table.py  PrefixAwareBlockTable — block table variant that can
+                           attach cached prefix blocks without allocating new ones.
 
 Backend dispatch (models/attention.py — PagedAttention._compute_attention):
     GPUPagedKVCache → CUDA kernel (attn_decode.cu)  — no explicit gather
@@ -28,6 +33,8 @@ from .block_allocator import BlockAllocator
 from .block_table import LayeredBlockTable
 from .cpu_attn import paged_attention
 from .paged_kv_cache import PagedKVCache
+from .prefix_cache import PrefixCache
+from .prefix_block_table import PrefixAwareBlockTable
 
 __all__ = [
     "BlockAllocator",
@@ -35,6 +42,8 @@ __all__ = [
     "PagedKVCache",
     "GPUPagedKVCache",
     "paged_attention",
+    "PrefixCache",
+    "PrefixAwareBlockTable",
 ]
 
 # GPUPagedKVCache depends on CUDA kernels — import lazily so CPU-only

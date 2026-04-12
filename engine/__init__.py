@@ -11,6 +11,11 @@ Files in this package:
     forward_pass.py      forward_unified() — one batched transformer forward pass
                          for ALL active sequences (prefill + decode) per iteration
     continuous_engine.py ContinuousBatchingEngine — top-level engine loop + metrics
+    prefix_sequence.py   PrefixSequenceGroup — SequenceGroup variant that uses
+                         PrefixAwareBlockTable and tracks n_cached_tokens
+    prefix_engine.py     PrefixAwareEngine — extends ContinuousBatchingEngine with
+                         hash-based prefix KV reuse; skips forward pass for cached
+                         prompt prefixes shared across requests
 
 Sequence lifecycle:
     Request → WAITING → PREFILL → DECODING → DONE
@@ -33,6 +38,8 @@ from engine.request import Request, RequestQueue
 from engine.sequence import SeqStatus, SequenceGroup
 from engine.scheduler import Scheduler, SchedulerOutput, DEFAULT_CHUNK_SIZE
 from engine.continuous_engine import ContinuousBatchingEngine, EngineMetrics
+from engine.prefix_sequence import PrefixSequenceGroup
+from engine.prefix_engine import PrefixAwareEngine, PrefixEngineMetrics
 
 __all__ = [
     "Request",
@@ -44,4 +51,7 @@ __all__ = [
     "DEFAULT_CHUNK_SIZE",
     "ContinuousBatchingEngine",
     "EngineMetrics",
+    "PrefixSequenceGroup",
+    "PrefixAwareEngine",
+    "PrefixEngineMetrics",
 ]
