@@ -313,7 +313,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--top_k",          type=int,   default=50)
     p.add_argument("--top_p",          type=float, default=1.0)
     p.add_argument("--block_size",     type=int,   default=16)
-    p.add_argument("--kv_budget_gb",   type=float, default=None)
+    p.add_argument("--kv_budget_gb",   type=float, default=2.0,
+                   help="GB to allocate for the GPU KV pool (default: 2.0)")
     p.add_argument("--cache_fraction", type=float, default=0.5,
                    help="Fraction of logical KV pool reserved for prefix cache")
     p.add_argument("--max_batch",      type=int,   default=8)
