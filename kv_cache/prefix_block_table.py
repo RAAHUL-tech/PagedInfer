@@ -118,13 +118,13 @@ class PrefixAwareBlockTable:
 
         If the last block is full (or there are no blocks yet), allocate n_layers
         new physical blocks — one per transformer layer — and append them.
+        GPUPagedKVCache is a pre-allocated contiguous pool and needs no per-block
+        callback — the kv_cache argument is accepted for API compatibility only.
         """
         if self.num_blocks == 0 or self.last_block_is_full:
             new_ids = allocator.allocate(self.n_layers)
             for li in range(self.n_layers):
                 self.block_ids[li].append(new_ids[li])
-                if kv_cache is not None:
-                    kv_cache.on_block_allocated(li, new_ids[li])
         self.num_tokens += 1
 
     def append_tokens(
@@ -195,8 +195,6 @@ class PrefixAwareBlockTable:
         immediately to the allocator free-list.
         """
         all_ids = [b for layer_ids in self.block_ids for b in layer_ids]
-        if kv_cache is not None and hasattr(kv_cache, "on_blocks_freed"):
-            kv_cache.on_blocks_freed(all_ids)
         allocator.free(all_ids)
         self.block_ids  = [[] for _ in range(self.n_layers)]
         self.num_tokens = 0
