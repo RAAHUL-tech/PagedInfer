@@ -72,6 +72,16 @@ class BlockAllocator:
         """Return True if at least `n` free blocks are available."""
         return len(self._free) >= n
 
+    def inc_ref(self, block_id: int) -> None:
+        """
+        Increment the reference count of a block without allocating it.
+
+        Called by PrefixCache.match() when cached blocks are reused by a new
+        sequence.  The block is now shared between the cache and the sequence —
+        both must call free() before the physical slot is returned to the pool.
+        """
+        self._ref_count[block_id] += 1
+
     @property
     def n_free(self) -> int:
         return len(self._free)
