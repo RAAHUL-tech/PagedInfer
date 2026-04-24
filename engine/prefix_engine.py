@@ -541,6 +541,7 @@ class PrefixAwareEngine:
                         next_tok == self.eos_token_id
                         or seq.n_generated >= seq.max_new_tokens
                     )
+                    self._on_token(seq, next_tok, done)
                     if done:
                         finished_this_step.append(self._finish(seq))
                     elif seq not in self.running:
@@ -576,6 +577,7 @@ class PrefixAwareEngine:
                     next_tok == self.eos_token_id
                     or seq.n_generated >= seq.max_new_tokens
                 )
+                self._on_token(seq, next_tok, done)
                 if done:
                     finished_this_step.append(self._finish(seq))
                 elif seq not in self.running:
@@ -608,6 +610,20 @@ class PrefixAwareEngine:
         return self.finished
 
     # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _on_token(
+        self,
+        seq      : "PrefixSequenceGroup",
+        token_id : int,
+        is_final : bool,
+    ) -> None:
+        """
+        Called after every token is sampled (both first-token and decode tokens).
+
+        No-op in the base class.  Override in subclasses (e.g. server/engine_server.py)
+        to stream tokens to waiting HTTP clients without polling.
+        """
+        pass  # noqa: override point — params intentionally unused in base
 
     def _finish(self, seq: PrefixSequenceGroup) -> Tuple[int, str, List[int]]:
         seq.status      = SeqStatus.DONE
